@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="pt-MZ">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>O Frangão - Gestão de Caixa</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#92400e">
+<link rel="apple-touch-icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Frangão Caixa">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; overscroll-behavior-y: contain; }
+  input[type=number]::-webkit-outer-spin-button,
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; margin:0; }
+  input[type=number] { -moz-appearance: textfield; }
+  ::-webkit-scrollbar { width: 0px; background: transparent; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+// ─── Constantes ───────────────────────────────────────────────
+const MESES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const MESES_CURTO = ["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"];
+const CATS_SAIDA = ["Fornecedores","Salários","Água/Luz","Outras Despesas"];
+const CORES_SAIDA = ["#f59e0b","#818cf8","#34d399","#fb7185"];
+const STORAGE_KEY = "frangao_pwa_v1";
+
+const fmt = v => Number(v||0).toLocaleString("pt-MZ",{minimumFractionDigits:2,maximumFractionDigits:2});
+const fmtK = v => Math.abs(v)>=1000 ? `${(v/1000).toFixed(1)}k` : fmt(v);
+const S = n => String(n).padStart(2,"0");
+const hoje = () => { const d=new Date(); return `${d.getFullYear()}-${S(d.getMonth()+1)}-${S(d.getDate())}`; };
+const loadData = () => { try { const r=localStorage.getItem(STORAGE_KEY); return r?JSON.parse(r):{}; } catch{return{};} };
+const saveData = d => { try{localStorage.setItem(STORAGE_KEY,JSON.stringify(d));}catch{} };
+const totalEnt = r => (Number(r?.pos)||0)+(Number(r?.numerario)||0);
+const totalSai = r => CATS_SAIDA.reduce((a,c)=>a+(Number(r?.saidas?.[c])||0),0);
+const saldoDia = r => totalEnt(r)-totalSai(r);
+const corSaldo = s => s>=0?"#4ade80":"#f87171";
+
+// ─── Componentes UI base ──────────────────────────────────────
+const Badge = ({children,cor="#fbbf24"}) => (
+  <span style={{background:cor+"22",color:cor,borderRadius:20,padding:"2px 10px",fontSize:11,fontWeight:700,letterSpacing:0.5}}>{children}</span>
+);
+const Card = ({children,style={}}) => (
+  <div style={{background:"#1e1208",border:"1px solid #3d2100",borderRadius:16,padding:"18px 20px",marginBottom:14,...style}}>{children}</div>
+);
+const StatCard = ({label,value,sub,cor="#fbbf24",icon}) => (
+  <div style={{background:"#1e1208",border:"1px solid #3d2100",borderRadius:14,padding:"14px 16px",flex:1,minWidth:130}}>
+    <div style={{fontSize:20,marginBottom:4}}>{icon}</div>
+    <div style={{fontSize:13,color:"#9a7050",marginBottom:2}}>{label}</div>
+    <div style={{fontSize:18,fontWeight:800,color:cor,lineHeight:1}}>{value}</div>
+    {sub && <div style={{fontSize:11,color:"#6b4a2a",marginTop:3}}>{sub}</div>}
+  </div>
+);
+const InputRow = ({label,value,onChange,nota,onNotaChange}) => (
+  <div style={{marginBottom:12}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:8,marginBottom:nota!==undefined?4:0}}>
+      <span style={{fontSize:13,color:"#c4956a",fontWeight:500,flex:1}}>{label}</span>
+      <div style={{position:"relative"}}>
+        <span style={{position:"absolute",left:10,top:"50%",transform:"translateY(-50%)",fontSize:12,color:"#6b4a2a",fontWeight:600}}>MT</span>
+        <input type="number" inputMode="decimal" value={value} onChange={e=>onChange(e.target.value)} placeholder="0.00" min="0" step="0.01"
+          style={{width:130,paddingLeft:30,paddingRight:10,paddingTop:8,paddingBottom:8,borderRadius:8,
+            border:"1px solid #3d2100",background:"#120800",color:"#f5e6d3",fontSize:14,textAlign:"right",outline:"none"}}/>
+      </div>
+    </div>
+    {nota!==undefined &&
+      <input value={nota} onChange={e=>onNotaChange(e.target.value)} placeholder="Descrição (opcional)"
+        style={{width:"100%",padding:"6px 10px",borderRadius:8,border:"1px solid #2d1600",background:"#120800",
+          color:"#c4956a",fontSize:12,boxSizing:"border-box",outline:"none"}}/>}
+  </div>
+);
+const DisplayRow = ({label,value,cor="#f5e6d3",bold,nota}) => (
+  <div style={{marginBottom:nota?8:6}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+      <span style={{fontSize:13,color:"#9a7050"}}>{label}</span>
+      <span style={{fontSize:bold?15:13,fontWeight:bold?700:500,color:cor}}>MT {fmt(value)}</span>
+    </div>
+    {nota && <div style={{fontSize:11,color:"#6b4a2a",textAlign:"right",marginTop:1}}>{nota}</div>}
+  </div>
+);
+
+// ─── Gráficos SVG nativos (sem dependências) ──────────────────
+function GraficoBarras({ dados, chaves, cores, height=160, formatador=fmtK }) {
+  const max = Math.max(1, ...dados.flatMap(d => chaves.map(k => Math.abs(d[k]||0))));
+  const w = 100 / dados.length;
+  return (
+    <div>
+      <svg viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" style={{ width:"100%", height, display:"block" }}>
+        {dados.map((d,i) => {
+          const groupW = w * 0.7;
+          const barW = groupW / chaves.length;
+          const xStart = i*w + (w-groupW)/2;
+          return chaves.map((k,j) => {
+            const val = d[k]||0;
+            const barH = (Math.abs(val)/max) * (height-22);
+            const x = xStart + j*barW;
+            return (
+              <rect key={k} x={x} y={height-22-barH} width={barW*0.85} height={Math.max(barH,1)}
+                fill={cores[j]} rx="0.6"/>
+            );
+          });
+        })}
+      </svg>
+      <div style={{ display:"flex", marginTop:2 }}>
+        {dados.map((d,i)=>(
+          <div key={i} style={{ flex:1, textAlign:"center", fontSize:9, color:"#9a7050" }}>{d.label}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GraficoLinha({ dados, chave, cor="#fbbf24", height=120 }) {
+  const vals = dados.map(d=>d[chave]||0);
+  const max = Math.max(...vals, 1);
+  const min = Math.min(...vals, 0);
+  const range = max-min || 1;
+  const pts = dados.map((d,i) => {
+    const x = (i/(dados.length-1||1)) * 100;
+    const y = height - 20 - ((d[chave]-min)/range)*(height-30);
+    return `${x},${y}`;
+  }).join(" ");
+  return (
+    <div>
+      <svg viewBox={`0 0 100 ${height}`} preserveAspectRatio="none" style={{ width:"100%", height, display:"block" }}>
+        <polyline points={pts} fill="none" stroke={cor} strokeWidth="1.2" vectorEffect="non-scaling-stroke"/>
+        {dados.map((d,i) => {
+          const x = (i/(dados.length-1||1)) * 100;
+          const y = height - 20 - ((d[chave]-min)/range)*(height-30);
+          return <circle key={i} cx={x} cy={y} r="1.3" fill={cor}/>;
+        })}
+      </svg>
+      <div style={{ display:"flex", marginTop:2 }}>
+        {dados.map((d,i)=>(
+          <div key={i} style={{ flex:1, textAlign:"center", fontSize:9, color:"#9a7050" }}>{d.label}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function GraficoPizza({ dados, size=160 }) {
+  const total = dados.reduce((a,d)=>a+d.value,0);
+  if (total<=0) return null;
+  let acc = 0;
+  const r = 40, cx=50, cy=50;
+  const slices = dados.map(d => {
+    const startAngle = (acc/total)*2*Math.PI - Math.PI/2;
+    acc += d.value;
+    const endAngle = (acc/total)*2*Math.PI - Math.PI/2;
+    const x1 = cx + r*Math.cos(startAngle), y1 = cy + r*Math.sin(startAngle);
+    const x2 = cx + r*Math.cos(endAngle), y2 = cy + r*Math.sin(endAngle);
+    const large = (endAngle-startAngle) > Math.PI ? 1 : 0;
+    return { path:`M${cx},${cy} L${x1},${y1} A${r},${r} 0 ${large} 1 ${x2},${y2} Z`, color:d.color, name:d.name, pct: (d.value/total*100).toFixed(0) };
+  });
+  return (
+    <div style={{ display:"flex", alignItems:"center", gap:18, flexWrap:"wrap" }}>
+      <svg viewBox="0 0 100 100" style={{ width:size, height:size }}>
+        {slices.map((s,i)=><path key={i} d={s.path} fill={s.color}/>)}
+      </svg>
+      <div style={{ flex:1, minWidth:120 }}>
+        {slices.map((s,i)=>(
+          <div key={i} style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}>
+            <div style={{ width:9, height:9, borderRadius:2, background:s.color }}/>
+            <span style={{ fontSize:12, color:"#c4956a", flex:1 }}>{s.name}</span>
+            <span style={{ fontSize:12, color:"#f5e6d3", fontWeight:700 }}>{s.pct}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── App principal ─────────────────────────────────────────────
+function App() {
+  const [vista, setVista] = useState("dashboard");
+  const [dataSel, setDataSel] = useState(hoje());
+  const [mesAtivo, setMesAtivo] = useState(new Date().getMonth());
+  const [anoAtivo, setAnoAtivo] = useState(new Date().getFullYear());
+  const [registos, setRegistos] = useState(loadData);
+  const [editando, setEditando] = useState(false);
+  const [guardado, setGuardado] = useState(false);
+  const blank = { Fornecedores:"", Salários:"", "Água/Luz":"", "Outras Despesas":"" };
+  const [form, setForm] = useState({ pos:"", numerario:"", saidas:{...blank}, notas:{...blank}, notaGeral:"" });
+
+  useEffect(()=>{ saveData(registos); },[registos]);
+
+  useEffect(()=>{
+    const r = registos[dataSel];
+    if (r) {
+      setForm({
+        pos: r.pos ?? "", numerario: r.numerario ?? "",
+        saidas: {...blank, ...r.saidas}, notas: {...blank, ...r.notas}, notaGeral: r.notaGeral ?? ""
+      });
+      setEditando(false);
+    } else {
+      setForm({ pos:"", numerario:"", saidas:{...blank}, notas:{...blank}, notaGeral:"" });
+      setEditando(true);
+    }
+    setGuardado(false);
+  },[dataSel, registos]);
+
+  function totaisMes(ano, mes) {
+    let pos=0, num=0, saidas={}, dias=[];
+    CATS_SAIDA.forEach(c=>saidas[c]=0);
+    const dm = new Date(ano, mes+1, 0).getDate();
+    for (let d=1; d<=dm; d++) {
+      const k = `${ano}-${S(mes+1)}-${S(d)}`;
+      if (registos[k]) {
+        const r = registos[k];
+        pos += Number(r.pos)||0; num += Number(r.numerario)||0;
+        CATS_SAIDA.forEach(c=>saidas[c]+=(Number(r.saidas?.[c])||0));
+        dias.push({ key:k, d, r });
+      }
+    }
+    return { pos, num, saidas, dias };
+  }
+
+  function totaisAno(ano) {
+    let pos=0, num=0, saidas={}, diasTotal=0;
+    CATS_SAIDA.forEach(c=>saidas[c]=0);
+    const meses = [];
+    for (let m=0; m<12; m++) {
+      const t = totaisMes(ano, m);
+      pos += t.pos; num += t.num;
+      CATS_SAIDA.forEach(c=>saidas[c]+=t.saidas[c]);
+      diasTotal += t.dias.length;
+      meses.push({ m, ...t });
+    }
+    return { pos, num, saidas, diasTotal, meses };
+  }
+
+  function guardar() {
+    const r = {
+      pos: Number(form.pos)||0, numerario: Number(form.numerario)||0,
+      saidas: Object.fromEntries(CATS_SAIDA.map(c=>[c, Number(form.saidas[c])||0])),
+      notas: {...form.notas}, notaGeral: form.notaGeral
+    };
+    setRegistos(p => ({...p, [dataSel]: r}));
+    setGuardado(true); setEditando(false);
+  }
+
+  function apagar() {
+    if (!window.confirm("Apagar o registo deste dia?")) return;
+    setRegistos(p => { const n={...p}; delete n[dataSel]; return n; });
+  }
+
+  function baixarCSV(linhas, nome) {
+    const csv = linhas.map(l=>l.map(v=>`"${v}"`).join(",")).join("\n");
+    const blob = new Blob(["\uFEFF"+csv], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download=nome; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function exportarMes() {
+    const t = totaisMes(anoAtivo, mesAtivo);
+    const linhas = [
+      ["Restaurante & Bar O Frangão"],
+      [`Relatório Mensal — ${MESES[mesAtivo]} ${anoAtivo}`], [],
+      ["Data","POS","Numerário","Total Entradas","Fornecedores","Salários","Água/Luz","Outras Despesas","Total Saídas","Saldo","Nota"],
+      ...t.dias.map(({d,r}) => [
+        `${S(d)}/${S(mesAtivo+1)}/${anoAtivo}`, r.pos||0, r.numerario||0, totalEnt(r),
+        r.saidas?.Fornecedores||0, r.saidas?.Salários||0, r.saidas?.["Água/Luz"]||0, r.saidas?.["Outras Despesas"]||0,
+        totalSai(r), saldoDia(r), r.notaGeral||""
+      ]), [],
+      ["TOTAIS", t.pos, t.num, t.pos+t.num, t.saidas.Fornecedores, t.saidas.Salários, t.saidas["Água/Luz"], t.saidas["Outras Despesas"],
+        CATS_SAIDA.reduce((a,c)=>a+t.saidas[c],0), (t.pos+t.num)-CATS_SAIDA.reduce((a,c)=>a+t.saidas[c],0), ""]
+    ];
+    baixarCSV(linhas, `Frangao_${MESES[mesAtivo]}_${anoAtivo}.csv`);
+  }
+
+  function exportarAno() {
+    const t = totaisAno(anoAtivo);
+    const totalSaiA = CATS_SAIDA.reduce((a,c)=>a+t.saidas[c],0);
+    const linhas = [
+      ["Restaurante & Bar O Frangão"], [`Relatório Anual — ${anoAtivo}`], [],
+      ["Mês","Entradas","Saídas","Saldo","Dias"],
+      ...t.meses.map(({m,pos,num,saidas:ms,dias}) => {
+        const e=pos+num, s=CATS_SAIDA.reduce((a,c)=>a+ms[c],0);
+        return [MESES[m], e, s, e-s, dias.length];
+      }), [],
+      ["TOTAL ANUAL", t.pos+t.num, totalSaiA, (t.pos+t.num)-totalSaiA, t.diasTotal], [],
+      ["Distribuição de Saídas"],
+      ...CATS_SAIDA.map(c => [c, t.saidas[c], totalSaiA>0 ? `${((t.saidas[c]/totalSaiA)*100).toFixed(1)}%` : "-"])
+    ];
+    baixarCSV(linhas, `Frangao_Anual_${anoAtivo}.csv`);
+  }
+
+  // ===== DASHBOARD =====
+  function Dashboard() {
+    const ta = totaisAno(anoAtivo);
+    const totalEntAno = ta.pos+ta.num, totalSaiAno = CATS_SAIDA.reduce((a,c)=>a+ta.saidas[c],0);
+    const saldoAno = totalEntAno-totalSaiAno;
+    const tm = totaisMes(anoAtivo, mesAtivo);
+    const totalEntMes = tm.pos+tm.num, totalSaiMes = CATS_SAIDA.reduce((a,c)=>a+tm.saidas[c],0);
+    const saldoMes = totalEntMes-totalSaiMes;
+
+    const dadosGrafico = ta.meses.map(({m,pos,num,saidas:ms}) => ({
+      label: MESES_CURTO[m], Entradas: pos+num, Saidas: CATS_SAIDA.reduce((a,c)=>a+ms[c],0),
+      Saldo: (pos+num)-CATS_SAIDA.reduce((a,c)=>a+ms[c],0)
+    }));
+    const pieData = CATS_SAIDA.map((c,i)=>({name:c, value:ta.saidas[c], color:CORES_SAIDA[i]})).filter(x=>x.value>0);
+    const ultimos7 = [];
+    for (let i=6;i>=0;i--) {
+      const d = new Date(); d.setDate(d.getDate()-i);
+      const k = `${d.getFullYear()}-${S(d.getMonth()+1)}-${S(d.getDate())}`;
+      const r = registos[k];
+      ultimos7.push({ label:`${S(d.getDate())}/${S(d.getMonth()+1)}`, Entradas: r?totalEnt(r):0, Saidas: r?totalSai(r):0 });
+    }
+
+    return (
+      <div>
+        <div style={{ display:"flex", gap:8, marginBottom:4 }}>
+          <select value={anoAtivo} onChange={e=>setAnoAtivo(Number(e.target.value))}
+            style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #3d2100", background:"#120800", color:"#fbbf24", fontSize:13, fontWeight:700 }}>
+            {[2024,2025,2026,2027].map(a=><option key={a} value={a}>{a}</option>)}
+          </select>
+          <select value={mesAtivo} onChange={e=>setMesAtivo(Number(e.target.value))}
+            style={{ padding:"6px 12px", borderRadius:8, border:"1px solid #3d2100", background:"#120800", color:"#fbbf24", fontSize:13, fontWeight:700 }}>
+            {MESES.map((m,i)=><option key={i} value={i}>{m}</option>)}
+          </select>
+        </div>
+
+        <div style={{ fontSize:11, color:"#6b4a2a", letterSpacing:1, textTransform:"uppercase", margin:"14px 0 8px" }}>Indicadores Anuais — {anoAtivo}</div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:6 }}>
+          <StatCard icon="💰" label="Total Entradas" value={`MT ${fmtK(totalEntAno)}`} cor="#4ade80"/>
+          <StatCard icon="📤" label="Total Saídas" value={`MT ${fmtK(totalSaiAno)}`} cor="#f87171"/>
+          <StatCard icon="💼" label="Saldo Anual" value={`MT ${fmtK(Math.abs(saldoAno))}`} cor={corSaldo(saldoAno)} sub={saldoAno<0?"Negativo":ta.diasTotal+" dias"}/>
+        </div>
+
+        <div style={{ fontSize:11, color:"#6b4a2a", letterSpacing:1, textTransform:"uppercase", margin:"14px 0 8px" }}>Indicadores de {MESES[mesAtivo]}</div>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:14 }}>
+          <StatCard icon="📥" label="Entradas Mês" value={`MT ${fmtK(totalEntMes)}`} cor="#86efac" sub={`POS:${fmtK(tm.pos)} Num:${fmtK(tm.num)}`}/>
+          <StatCard icon="📤" label="Saídas Mês" value={`MT ${fmtK(totalSaiMes)}`} cor="#fca5a5"/>
+          <StatCard icon="📊" label="Saldo Mês" value={`MT ${fmtK(Math.abs(saldoMes))}`} cor={corSaldo(saldoMes)} sub={`${tm.dias.length} dia(s)`}/>
+        </div>
+
+        <Card>
+          <div style={{ fontSize:13, fontWeight:700, color:"#fbbf24", marginBottom:12 }}>📈 Entradas vs Saídas — {anoAtivo}</div>
+          <GraficoBarras dados={dadosGrafico} chaves={["Entradas","Saidas"]} cores={["#4ade80","#f87171"]}/>
+        </Card>
+
+        <Card>
+          <div style={{ fontSize:13, fontWeight:700, color:"#fbbf24", marginBottom:12 }}>📉 Evolução do Saldo — {anoAtivo}</div>
+          <GraficoLinha dados={dadosGrafico} chave="Saldo" cor="#fbbf24"/>
+        </Card>
+
+        <Card>
+          <div style={{ fontSize:13, fontWeight:700, color:"#fbbf24", marginBottom:12 }}>🗓️ Últimos 7 Dias</div>
+          <GraficoBarras dados={ultimos7} chaves={["Entradas","Saidas"]} cores={["#4ade80","#f87171"]} height={130}/>
+        </Card>
+
+        {pieData.length>0 && (
+          <Card>
+            <div style={{ fontSize:13, fontWeight:700, color:"#fbbf24", marginBottom:12 }}>🥧 Distribuição de Saídas — {anoAtivo}</div>
+            <GraficoPizza dados={pieData}/>
+          </Card>
+        )}
+      </div>
+    );
+  }
+
+  // ===== DIÁRIO =====
+  function Diario() {
+    const ent = (Number(form.pos)||0)+(Number(form.numerario)||0);
+    const sai = CATS_SAIDA.reduce((a,c)=>a+(Number(form.saidas[c])||0),0);
+    const sal = ent-sai;
+    const regExiste = !!registos[dataSel];
+
+    return (
+      <div>
+        <div style={{ display:"flex", alignItems:"center", gap:8, margin:"14px 0 16px" }}>
+          <input type="date" value={dataSel} onChange={e=>setDataSel(e.target.value)}
+            style={{ flex:1, padding:"10px 14px", borderRadius:10, border:"1px solid #3d2100", background:"#120800", color:"#f5e6d3", fontSize:15, outline:"none" }}/>
+          {regExiste && !editando && <Badge cor="#4ade80">Registado</Badge>}
+          {!regExiste && editando && <Badge cor="#fbbf24">Novo</Badge>}
+        </div>
+
+        <Card>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+            <span style={{ fontSize:14, fontWeight:700, color:"#4ade80" }}>💰 Entradas</span>
+            <span style={{ fontSize:13, color:"#4ade80", fontWeight:600 }}>MT {fmt(ent)}</span>
+          </div>
+          {editando ? (
+            <>
+              <InputRow label="POS — Cartão/Transferência" value={form.pos} onChange={v=>setForm(f=>({...f,pos:v}))}/>
+              <InputRow label="Numerário — Dinheiro" value={form.numerario} onChange={v=>setForm(f=>({...f,numerario:v}))}/>
+            </>
+          ) : (
+            <>
+              <DisplayRow label="POS — Cartão/Transferência" value={form.pos}/>
+              <DisplayRow label="Numerário — Dinheiro" value={form.numerario}/>
+            </>
+          )}
+          <div style={{ height:1, background:"#3d2100", margin:"10px 0" }}/>
+          <DisplayRow label="Total Entradas" value={ent} cor="#4ade80" bold/>
+        </Card>
+
+        <Card>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+            <span style={{ fontSize:14, fontWeight:700, color:"#f87171" }}>📤 Saídas</span>
+            <span style={{ fontSize:13, color:"#f87171", fontWeight:600 }}>MT {fmt(sai)}</span>
+          </div>
+          {CATS_SAIDA.map(cat => editando ? (
+            <InputRow key={cat} label={cat} value={form.saidas[cat]}
+              onChange={v=>setForm(f=>({...f,saidas:{...f.saidas,[cat]:v}}))}
+              nota={form.notas[cat]} onNotaChange={v=>setForm(f=>({...f,notas:{...f.notas,[cat]:v}}))}/>
+          ) : (
+            <DisplayRow key={cat} label={cat} value={form.saidas[cat]||0} nota={form.notas[cat]||""}/>
+          ))}
+          <div style={{ height:1, background:"#3d2100", margin:"10px 0" }}/>
+          <DisplayRow label="Total Saídas" value={sai} cor="#f87171" bold/>
+        </Card>
+
+        <div style={{ background:"#120800", border:`2px solid ${corSaldo(sal)}`, borderRadius:14,
+          padding:"16px 20px", marginBottom:14, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div>
+            <div style={{ fontSize:12, color:"#9a7050", fontWeight:600 }}>SALDO DO DIA</div>
+            <div style={{ fontSize:11, color:"#6b4a2a", marginTop:2 }}>Entradas − Saídas</div>
+          </div>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontSize:24, fontWeight:900, color:corSaldo(sal), letterSpacing:-1 }}>
+              {sal<0?"- ":""}MT {fmt(Math.abs(sal))}
+            </div>
+            <Badge cor={corSaldo(sal)}>{sal>=0?"Positivo":"Negativo"}</Badge>
+          </div>
+        </div>
+
+        {editando && (
+          <Card>
+            <div style={{ fontSize:13, color:"#9a7050", marginBottom:8 }}>📝 Nota Geral do Dia</div>
+            <textarea value={form.notaGeral} onChange={e=>setForm(f=>({...f,notaGeral:e.target.value}))}
+              placeholder="Ex: feriado, evento especial, observações..."
+              style={{ width:"100%", padding:"10px 12px", borderRadius:8, border:"1px solid #3d2100",
+                background:"#120800", color:"#c4956a", fontSize:13, resize:"none", minHeight:70, boxSizing:"border-box", outline:"none" }}/>
+          </Card>
+        )}
+        {!editando && form.notaGeral && (
+          <Card style={{ borderColor:"#92400e" }}>
+            <span style={{ fontSize:12, color:"#fbbf24" }}>📝 </span>
+            <span style={{ fontSize:13, color:"#c4956a" }}>{form.notaGeral}</span>
+          </Card>
+        )}
+
+        <div style={{ display:"flex", gap:8 }}>
+          {editando ? (
+            <button onClick={guardar} style={{ flex:1, padding:"14px", borderRadius:12, border:"none",
+              background:"linear-gradient(135deg,#b45309,#92400e)", color:"#fff", fontSize:15, fontWeight:800, cursor:"pointer" }}>
+              ✅ Guardar Registo
+            </button>
+          ) : (
+            <>
+              <button onClick={()=>setEditando(true)} style={{ flex:1, padding:"13px", borderRadius:12, border:"none",
+                background:"#1d4ed8", color:"#fff", fontSize:14, fontWeight:700, cursor:"pointer" }}>✏️ Editar</button>
+              <button onClick={apagar} style={{ padding:"13px 18px", borderRadius:12, border:"1px solid #7f1d1d",
+                background:"transparent", color:"#f87171", fontSize:14, cursor:"pointer" }}>🗑️</button>
+            </>
+          )}
+        </div>
+        {guardado && (
+          <div style={{ textAlign:"center", color:"#4ade80", marginTop:10, fontSize:13, background:"#052e1644", borderRadius:8, padding:8 }}>
+            ✔ Registo guardado com sucesso!
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ===== MENSAL =====
+  function Mensal() {
+    const t = totaisMes(anoAtivo, mesAtivo);
+    const totalEntM = t.pos+t.num, totalSaiM = CATS_SAIDA.reduce((a,c)=>a+t.saidas[c],0);
+    const saldoM = totalEntM-totalSaiM;
+    const dadosDias = t.dias.map(({d,r}) => ({ label:S(d), Entradas:totalEnt(r), Saidas:totalSai(r) }));
+
+    return (
+      <div>
+        <div style={{ display:"flex", gap:8, margin:"14px 0 16px" }}>
+          <select value={mesAtivo} onChange={e=>setMesAtivo(Number(e.target.value))}
+            style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid #3d2100", background:"#120800", color:"#f5e6d3", fontSize:14, outline:"none" }}>
+            {MESES.map((m,i)=><option key={i} value={i}>{m}</option>)}
+          </select>
+          <input type="number" value={anoAtivo} onChange={e=>setAnoAtivo(Number(e.target.value))}
+            style={{ width:90, padding:"10px 12px", borderRadius:10, border:"1px solid #3d2100", background:"#120800", color:"#f5e6d3", fontSize:14, outline:"none" }}/>
+          <button onClick={exportarMes} style={{ padding:"10px 14px", borderRadius:10, border:"1px solid #166534",
+            background:"#052e1633", color:"#4ade80", fontSize:12, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" }}>📥 Excel</button>
+        </div>
+
+        <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+          <StatCard icon="📥" label="Entradas" value={`MT ${fmtK(totalEntM)}`} cor="#4ade80" sub={`${t.dias.length} dias`}/>
+          <StatCard icon="📤" label="Saídas" value={`MT ${fmtK(totalSaiM)}`} cor="#f87171"/>
+          <StatCard icon="💼" label="Saldo" value={`MT ${fmtK(Math.abs(saldoM))}`} cor={corSaldo(saldoM)}/>
+        </div>
+
+        <Card>
+          <div style={{ fontSize:13, fontWeight:700, color:"#fbbf24", marginBottom:10 }}>Resumo — {MESES[mesAtivo]} {anoAtivo}</div>
+          <DisplayRow label="POS" value={t.pos} cor="#86efac"/>
+          <DisplayRow label="Numerário" value={t.num} cor="#86efac"/>
+          <DisplayRow label="Total Entradas" value={totalEntM} cor="#4ade80" bold/>
+          <div style={{ height:1, background:"#3d2100", margin:"8px 0" }}/>
+          {CATS_SAIDA.map((c,i) => (
+            <div key={c} style={{ display:"flex", justifyContent:"space-between", marginBottom:6, alignItems:"center" }}>
+              <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+                <div style={{ width:8, height:8, borderRadius:2, background:CORES_SAIDA[i] }}/>
+                <span style={{ fontSize:13, color:"#9a7050" }}>{c}</span>
+              </div>
+              <span style={{ fontSize:13, color:CORES_SAIDA[i], fontWeight:500 }}>MT {fmt(t.saidas[c])}</span>
+            </div>
+          ))}
+          <div style={{ height:1, background:"#3d2100", margin:"8px 0" }}/>
+          <DisplayRow label="Total Saídas" value={totalSaiM} cor="#f87171" bold/>
+          <div style={{ height:2, background:"#3d2100", margin:"10px 0" }}/>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span style={{ fontSize:15, fontWeight:800, color:"#fff" }}>SALDO MENSAL</span>
+            <span style={{ fontSize:20, fontWeight:900, color:corSaldo(saldoM) }}>{saldoM<0?"-":""}MT {fmt(Math.abs(saldoM))}</span>
+          </div>
+        </Card>
+
+        {dadosDias.length>0 && (
+          <Card>
+            <div style={{ fontSize:13, fontWeight:700, color:"#fbbf24", marginBottom:12 }}>📊 Entradas vs Saídas por Dia</div>
+            <GraficoBarras dados={dadosDias} chaves={["Entradas","Saidas"]} cores={["#4ade80","#f87171"]}/>
+          </Card>
+        )}
+
+        {t.dias.length>0 && (
+          <>
+            <div style={{ fontSize:11, color:"#6b4a2a", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Detalhe por Dia</div>
+            {t.dias.map(({key,d,r}) => {
+              const e=totalEnt(r), s=totalSai(r), sl=saldoDia(r);
+              return (
+                <div key={key} onClick={()=>{setDataSel(key); setVista("diario");}}
+                  style={{ background:"#1e1208", border:"1px solid #3d2100", borderRadius:12, padding:"12px 16px",
+                    marginBottom:8, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+                  <div>
+                    <span style={{ fontSize:15, fontWeight:700, color:"#f5e6d3" }}>{S(d)}/{S(mesAtivo+1)}</span>
+                    {r.notaGeral && <div style={{ fontSize:11, color:"#6b4a2a", marginTop:2 }}>📝 {r.notaGeral}</div>}
+                  </div>
+                  <div style={{ textAlign:"right" }}>
+                    <div style={{ fontSize:11, color:"#9a7050" }}>Ent: {fmtK(e)} | Saí: {fmtK(s)}</div>
+                    <div style={{ fontSize:15, fontWeight:800, color:corSaldo(sl) }}>{sl<0?"-":""}MT {fmt(Math.abs(sl))}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </>
+        )}
+        {t.dias.length===0 && (
+          <div style={{ textAlign:"center", padding:"40px 20px", color:"#6b4a2a" }}>
+            <div style={{ fontSize:32, marginBottom:8 }}>📭</div>
+            <div>Nenhum registo em {MESES[mesAtivo]} {anoAtivo}</div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ===== ANUAL =====
+  function Anual() {
+    const t = totaisAno(anoAtivo);
+    const totalEntA = t.pos+t.num, totalSaiA = CATS_SAIDA.reduce((a,c)=>a+t.saidas[c],0);
+    const saldoA = totalEntA-totalSaiA;
+    const pieData = CATS_SAIDA.map((c,i)=>({name:c, value:t.saidas[c], color:CORES_SAIDA[i]})).filter(x=>x.value>0);
+    const dadosM = t.meses.map(({m,pos,num,saidas:ms}) => ({ label:MESES_CURTO[m], Entradas:pos+num, Saidas:CATS_SAIDA.reduce((a,c)=>a+ms[c],0) }));
+
+    return (
+      <div>
+        <div style={{ display:"flex", gap:8, margin:"14px 0 16px", alignItems:"center" }}>
+          <input type="number" value={anoAtivo} onChange={e=>setAnoAtivo(Number(e.target.value))}
+            style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid #3d2100", background:"#120800", color:"#f5e6d3", fontSize:15, outline:"none" }}/>
+          <button onClick={exportarAno} style={{ padding:"10px 14px", borderRadius:10, border:"1px solid #166534",
+            background:"#052e1633", color:"#4ade80", fontSize:12, fontWeight:700, cursor:"pointer" }}>📥 Excel</button>
+        </div>
+
+        <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
+          <StatCard icon="📥" label="Entradas Anuais" value={`MT ${fmtK(totalEntA)}`} cor="#4ade80" sub={`${t.diasTotal} dias`}/>
+          <StatCard icon="📤" label="Saídas Anuais" value={`MT ${fmtK(totalSaiA)}`} cor="#f87171"/>
+          <StatCard icon="💼" label="Saldo Anual" value={`MT ${fmtK(Math.abs(saldoA))}`} cor={corSaldo(saldoA)}/>
+        </div>
+
+        <Card>
+          <div style={{ fontSize:13, fontWeight:700, color:"#fbbf24", marginBottom:12 }}>📊 Entradas vs Saídas — {anoAtivo}</div>
+          <GraficoBarras dados={dadosM} chaves={["Entradas","Saidas"]} cores={["#4ade80","#f87171"]} height={180}/>
+        </Card>
+
+        {pieData.length>0 && (
+          <Card>
+            <div style={{ fontSize:13, fontWeight:700, color:"#fbbf24", marginBottom:12 }}>🥧 Distribuição de Saídas</div>
+            <GraficoPizza dados={pieData}/>
+          </Card>
+        )}
+
+        <div style={{ fontSize:11, color:"#6b4a2a", letterSpacing:1, textTransform:"uppercase", marginBottom:8 }}>Meses com Registos</div>
+        {t.meses.filter(({dias})=>dias.length>0).map(({m,pos,num,saidas:ms,dias}) => {
+          const e=pos+num, s=CATS_SAIDA.reduce((a,c)=>a+ms[c],0), sl=e-s;
+          return (
+            <div key={m} onClick={()=>{setMesAtivo(m); setVista("mensal");}}
+              style={{ background:"#1e1208", border:"1px solid #3d2100", borderRadius:12, padding:"12px 16px",
+                marginBottom:8, cursor:"pointer", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+              <div>
+                <span style={{ fontSize:15, fontWeight:700, color:"#f5e6d3" }}>{MESES[m]}</span>
+                <span style={{ fontSize:11, color:"#6b4a2a", marginLeft:8 }}>{dias.length} dia(s)</span>
+              </div>
+              <div style={{ textAlign:"right" }}>
+                <div style={{ fontSize:11, color:"#9a7050" }}>Ent: {fmtK(e)} | Saí: {fmtK(s)}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:corSaldo(sl) }}>{sl<0?"-":""}MT {fmt(Math.abs(sl))}</div>
+              </div>
+            </div>
+          );
+        })}
+        {t.diasTotal===0 && (
+          <div style={{ textAlign:"center", padding:"40px 20px", color:"#6b4a2a" }}>
+            <div style={{ fontSize:32, marginBottom:8 }}>📭</div>
+            <div>Nenhum registo em {anoAtivo}</div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const NAV = [
+    { id:"dashboard", icon:"🏠", label:"Dashboard" },
+    { id:"diario", icon:"📋", label:"Diário" },
+    { id:"mensal", icon:"📅", label:"Mensal" },
+    { id:"anual", icon:"📊", label:"Anual" },
+  ];
+
+  return (
+    <div style={{ fontFamily:"'Segoe UI',system-ui,sans-serif", background:"#0d0600", minHeight:"100vh", color:"#f5e6d3", paddingBottom:80 }}>
+      <div style={{ background:"linear-gradient(135deg,#92400e 0%,#6b1f00 60%,#1a0800 100%)", padding:"22px 20px 16px", borderBottom:"1px solid #3d2100" }}>
+        <div style={{ fontSize:10, letterSpacing:4, color:"#fbbf24", textTransform:"uppercase", marginBottom:6 }}>Gestão de Caixa</div>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <span style={{ fontSize:32 }}>🍗</span>
+          <div>
+            <div style={{ fontSize:22, fontWeight:900, color:"#fff", letterSpacing:-0.5 }}>O Frangão</div>
+            <div style={{ fontSize:11, color:"#c4956a" }}>Restaurante & Bar · Maputo</div>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ padding:"0 16px", maxWidth:600, margin:"0 auto" }}>
+        {vista==="dashboard" && <Dashboard/>}
+        {vista==="diario" && <Diario/>}
+        {vista==="mensal" && <Mensal/>}
+        {vista==="anual" && <Anual/>}
+      </div>
+
+      <div style={{ position:"fixed", bottom:0, left:0, right:0, background:"#1a0800", borderTop:"1px solid #3d2100",
+        display:"flex", justifyContent:"space-around", padding:"10px 0 14px" }}>
+        {NAV.map(({id,icon,label}) => (
+          <button key={id} onClick={()=>setVista(id)}
+            style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:3, background:"none", border:"none", cursor:"pointer",
+              color:vista===id?"#fbbf24":"#6b4a2a", padding:"4px 12px", borderRadius:10 }}>
+            <span style={{ fontSize:20 }}>{icon}</span>
+            <span style={{ fontSize:10, fontWeight:700, letterSpacing:0.5 }}>{label}</span>
+            {vista===id && <div style={{ width:4, height:4, borderRadius:2, background:"#fbbf24" }}/>}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  });
+}
+</script>
+
+</body>
+</html>
